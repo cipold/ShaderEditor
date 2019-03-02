@@ -11,6 +11,7 @@ import de.markusfisch.android.shadereditor.hardware.LightListener;
 import de.markusfisch.android.shadereditor.hardware.LinearAccelerationListener;
 import de.markusfisch.android.shadereditor.hardware.PressureListener;
 import de.markusfisch.android.shadereditor.hardware.ProximityListener;
+import de.markusfisch.android.shadereditor.hardware.RotationVectorListener;
 
 import android.annotation.TargetApi;
 import android.app.Activity;
@@ -61,6 +62,7 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 	public static final String UNIFORM_CAMERA_FRONT = "cameraFront";
 	public static final String UNIFORM_CAMERA_ORIENTATION = "cameraOrientation";
 	public static final String UNIFORM_DATE = "date";
+	public static final String UNIFORM_FRAME_NUMBER = "frame";
 	public static final String UNIFORM_FTIME = "ftime";
 	public static final String UNIFORM_GRAVITY = "gravity";
 	public static final String UNIFORM_GYROSCOPE = "gyroscope";
@@ -79,6 +81,7 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 	public static final String UNIFORM_PROXIMITY = "proximity";
 	public static final String UNIFORM_RESOLUTION = "resolution";
 	public static final String UNIFORM_ROTATION_MATRIX = "rotationMatrix";
+	public static final String UNIFORM_ROTATION_VECTOR = "rotationVector";
 	public static final String UNIFORM_SECOND = "second";
 	public static final String UNIFORM_START_RANDOM = "startRandom";
 	public static final String UNIFORM_SUB_SECOND = "subsecond";
@@ -218,6 +221,7 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 	private LinearAccelerationListener linearAccelerationListener;
 	private PressureListener pressureListener;
 	private ProximityListener proximityListener;
+	private RotationVectorListener rotationVectorListener;
 	private OnRendererListener onRendererListener;
 	private String fragmentShader;
 	private int version = 2;
@@ -231,6 +235,7 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 	private int timeLoc;
 	private int secondLoc;
 	private int subSecondLoc;
+	private int frameNumLoc;
 	private int fTimeLoc;
 	private int resolutionLoc;
 	private int touchLoc;
@@ -242,6 +247,7 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 	private int gyroscopeLoc;
 	private int magneticLoc;
 	private int rotationMatrixLoc;
+	private int rotationVectorLoc;
 	private int orientationLoc;
 	private int inclinationMatrixLoc;
 	private int inclinationLoc;
@@ -255,10 +261,11 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 	private int backBufferLoc;
 	private int cameraOrientationLoc;
 	private int cameraAddentLoc;
-	private int numberOfTextures = 0;
+	private int numberOfTextures;
 	private int pointerCount;
-	private int frontTarget = 0;
+	private int frontTarget;
 	private int backTarget = 1;
+	private int frameNum;
 	private long startTime;
 	private long lastRender;
 	private long lastBatteryUpdate;
@@ -348,6 +355,7 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 	public void onSurfaceChanged(GL10 gl, int width, int height) {
 		startTime = lastRender = System.nanoTime();
 		startRandom = (float) Math.random();
+		frameNum = 0;
 
 		surfaceResolution[0] = width;
 		surfaceResolution[1] = height;
@@ -405,6 +413,12 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 			GLES20.glUniform1f(
 					subSecondLoc,
 					delta - (int) delta);
+		}
+
+		if (frameNumLoc > -1) {
+			GLES20.glUniform1i(
+					frameNumLoc,
+					frameNum);
 		}
 
 		if (fTimeLoc > -1) {
@@ -485,58 +499,8 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 
 		if ((rotationMatrixLoc > -1 || orientationLoc > -1 ||
 				inclinationMatrixLoc > -1 || inclinationLoc > -1) &&
-				gravityValues != null && magneticFieldListener != null) {
-			SensorManager.getRotationMatrix(
-					rotationMatrix,
-					inclinationMatrix,
-					gravityValues,
-					magneticFieldListener.filtered);
-			if (deviceRotation != 0) {
-				int x = SensorManager.AXIS_Y;
-				int y = SensorManager.AXIS_MINUS_X;
-				switch (deviceRotation) {
-					default:
-						break;
-					case 270:
-						x = SensorManager.AXIS_MINUS_Y;
-						y = SensorManager.AXIS_X;
-						break;
-				}
-				SensorManager.remapCoordinateSystem(
-						rotationMatrix,
-						x,
-						y,
-						rotationMatrix);
-			}
-			if (rotationMatrixLoc > -1) {
-				GLES20.glUniformMatrix3fv(
-						rotationMatrixLoc,
-						1,
-						true,
-						rotationMatrix,
-						0);
-			}
-			if (orientationLoc > -1) {
-				SensorManager.getOrientation(rotationMatrix, orientation);
-				GLES20.glUniform3fv(
-						orientationLoc,
-						1,
-						orientation,
-						0);
-			}
-			if (inclinationMatrixLoc > -1) {
-				GLES20.glUniformMatrix3fv(
-						inclinationMatrixLoc,
-						1,
-						true,
-						inclinationMatrix,
-						0);
-			}
-			if (inclinationLoc > -1) {
-				GLES20.glUniform1f(
-						inclinationLoc,
-						SensorManager.getInclination(inclinationMatrix));
-			}
+				gravityValues != null) {
+			setRotationMatrix();
 		}
 
 		if (lightLoc > -1 && lightListener != null) {
@@ -555,6 +519,14 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 			GLES20.glUniform1f(
 					proximityLoc,
 					proximityListener.getCentimeters());
+		}
+
+		if (rotationVectorLoc > -1 && rotationVectorListener != null) {
+			GLES20.glUniform3fv(
+					rotationVectorLoc,
+					1,
+					rotationVectorListener.values,
+					0);
 		}
 
 		if (offsetLoc > -1) {
@@ -717,6 +689,8 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 		if (onRendererListener != null) {
 			updateFps(now);
 		}
+
+		++frameNum;
 	}
 
 	public void unregisterListeners() {
@@ -753,6 +727,10 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 
 		if (proximityListener != null) {
 			proximityListener.unregister();
+		}
+
+		if (rotationVectorListener != null) {
+			rotationVectorListener.unregister();
 		}
 
 		unregisterCameraListener();
@@ -850,6 +828,8 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 				program, UNIFORM_SECOND);
 		subSecondLoc = GLES20.glGetUniformLocation(
 				program, UNIFORM_SUB_SECOND);
+		frameNumLoc = GLES20.glGetUniformLocation(
+				program, UNIFORM_FRAME_NUMBER);
 		fTimeLoc = GLES20.glGetUniformLocation(
 				program, UNIFORM_FTIME);
 		resolutionLoc = GLES20.glGetUniformLocation(
@@ -872,6 +852,8 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 				program, UNIFORM_MAGNETIC);
 		rotationMatrixLoc = GLES20.glGetUniformLocation(
 				program, UNIFORM_ROTATION_MATRIX);
+		rotationVectorLoc = GLES20.glGetUniformLocation(
+				program, UNIFORM_ROTATION_VECTOR);
 		orientationLoc = GLES20.glGetUniformLocation(
 				program, UNIFORM_ORIENTATION);
 		inclinationMatrixLoc = GLES20.glGetUniformLocation(
@@ -920,7 +902,8 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 			}
 			if (!gravityListener.register()) {
 				gravityListener = null;
-				gravityValues = getAccelerometerListener().gravity;
+				AccelerometerListener l = getAccelerometerListener();
+				gravityValues = l != null ? l.gravity : null;
 			} else {
 				gravityValues = gravityListener.values;
 			}
@@ -933,7 +916,8 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 			}
 			if (!linearAccelerationListener.register()) {
 				linearAccelerationListener = null;
-				linearValues = getAccelerometerListener().linear;
+				AccelerometerListener l = getAccelerometerListener();
+				linearValues = l != null ? l.linear : null;
 			} else {
 				linearValues = linearAccelerationListener.values;
 			}
@@ -943,7 +927,9 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 			if (gyroscopeListener == null) {
 				gyroscopeListener = new GyroscopeListener(context);
 			}
-			gyroscopeListener.register();
+			if (!gyroscopeListener.register()) {
+				gyroscopeListener = null;
+			}
 		}
 
 		if (magneticLoc > -1 || rotationMatrixLoc > -1 ||
@@ -952,34 +938,55 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 			if (magneticFieldListener == null) {
 				magneticFieldListener = new MagneticFieldListener(context);
 			}
-			magneticFieldListener.register();
+			if (!magneticFieldListener.register()) {
+				magneticFieldListener = null;
+			}
 		}
 
 		if (lightLoc > -1) {
 			if (lightListener == null) {
 				lightListener = new LightListener(context);
 			}
-			lightListener.register();
+			if (!lightListener.register()) {
+				lightListener = null;
+			}
 		}
 
 		if (pressureLoc > -1) {
 			if (pressureListener == null) {
 				pressureListener = new PressureListener(context);
 			}
-			pressureListener.register();
+			if (!pressureListener.register()) {
+				pressureListener = null;
+			}
 		}
 
 		if (proximityLoc > -1) {
 			if (proximityListener == null) {
 				proximityListener = new ProximityListener(context);
 			}
-			proximityListener.register();
+			if (!proximityListener.register()) {
+				proximityListener = null;
+			}
+		}
+
+		if (rotationVectorLoc > -1 || (magneticFieldListener == null &&
+				(orientationLoc > -1 || rotationMatrixLoc > -1))) {
+			if (rotationVectorListener == null) {
+				rotationVectorListener = new RotationVectorListener(context);
+			}
+			if (!rotationVectorListener.register()) {
+				rotationVectorListener = null;
+			}
 		}
 	}
 
 	private AccelerometerListener getAccelerometerListener() {
 		if (accelerometerListener == null) {
 			accelerometerListener = new AccelerometerListener(context);
+		}
+		if (!accelerometerListener.register()) {
+			return null;
 		}
 		return accelerometerListener;
 	}
@@ -1034,6 +1041,70 @@ public class ShaderRenderer implements GLSurfaceView.Renderer {
 			// will never happen because neither
 			// width nor height <= 0
 			return null;
+		}
+	}
+
+	private void setRotationMatrix() {
+		boolean haveInclination = false;
+		if (gravityListener != null && magneticFieldListener != null &&
+				SensorManager.getRotationMatrix(
+						rotationMatrix,
+						inclinationMatrix,
+						gravityValues,
+						magneticFieldListener.filtered)) {
+			haveInclination = true;
+		} else if (rotationVectorListener != null) {
+			SensorManager.getRotationMatrixFromVector(
+					rotationMatrix,
+					rotationVectorListener.values);
+		} else {
+			return;
+		}
+		if (deviceRotation != 0) {
+			int x = SensorManager.AXIS_Y;
+			int y = SensorManager.AXIS_MINUS_X;
+			switch (deviceRotation) {
+				default:
+					break;
+				case 270:
+					x = SensorManager.AXIS_MINUS_Y;
+					y = SensorManager.AXIS_X;
+					break;
+			}
+			SensorManager.remapCoordinateSystem(
+					rotationMatrix,
+					x,
+					y,
+					rotationMatrix);
+		}
+		if (rotationMatrixLoc > -1) {
+			GLES20.glUniformMatrix3fv(
+					rotationMatrixLoc,
+					1,
+					true,
+					rotationMatrix,
+					0);
+		}
+		if (orientationLoc > -1) {
+			SensorManager.getOrientation(rotationMatrix, orientation);
+			GLES20.glUniform3fv(
+					orientationLoc,
+					1,
+					orientation,
+					0);
+		}
+		if (inclinationMatrixLoc > -1 && haveInclination) {
+			GLES20.glUniformMatrix3fv(
+					inclinationMatrixLoc,
+					1,
+					true,
+					inclinationMatrix,
+					0);
+		}
+		if (inclinationLoc > -1 && haveInclination) {
+			GLES20.glUniform1f(
+					inclinationLoc,
+					SensorManager.getInclination(inclinationMatrix));
 		}
 	}
 
